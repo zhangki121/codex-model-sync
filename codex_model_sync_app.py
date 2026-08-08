@@ -557,10 +557,12 @@ class CodexModelSyncApp:
         self.prev_running = False
         self.last_synced_fp = None
         self.last_backup_dir = None
+        self._cfg_mtime = None
+        self._last_auto = (None, None)
 
         root.title(APP_NAME)
-        root.geometry("820x620")
-        root.minsize(720, 540)
+        root.geometry("860x640")
+        root.minsize(760, 560)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._set_window_icon()
         self.tray = None
@@ -573,11 +575,13 @@ class CodexModelSyncApp:
         self.skip_var = tk.BooleanVar(value=False)
         self.autostart_var = tk.BooleanVar(value=False)
 
+        self._setup_style()
         self._build_ui()
         self._read_config()
         self._update_info_labels()
         self._load_autostart_state()
         self.root.after(100, self._pump)
+        self.root.after(2000, self._watch_config)
         self.root.bind("<Unmap>", self._on_unmap)
         self._create_tray()
 
@@ -591,26 +595,92 @@ class CodexModelSyncApp:
             except Exception:
                 pass
 
-    def _build_ui(self):
-        pad = {"padx": 10, "pady": 6}
+    def _setup_style(self):
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("vista")
+        except Exception:
+            pass
+        base_font = ("Microsoft YaHei UI", 9)
+        style.configure(".", font=base_font)
+        style.configure("TButton", padding=(14, 6))
+        style.configure("Primary.TButton", font=("Microsoft YaHei UI", 9, "bold"), padding=(18, 7))
+        style.configure("TLabelframe", padding=(4, 4))
+        style.configure("TLabelframe.Label", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 14, "bold"))
+        style.configure("Subtitle.TLabel", foreground="#555555")
+        style.configure("Hint.TLabel", foreground="#777777")
 
-        frm_cfg = ttk.LabelFrame(self.root, text="目标配置（默认读取 ~/.codex/config.toml）")
+    def _get_config_mtime(self):
+        cfg = CODEX_HOME / "config.toml"
+        try:
+            return cfg.stat().st_mtime if cfg.is_file() else None
+        except Exception:
+            return None
+
+    def _watch_config(self):
+        self.root.after(2000, self._watch_config)
+        mtime = self._get_config_mtime()
+        if self._cfg_mtime is None:
+            self._cfg_mtime = mtime
+            self._last_auto = (self.model_var.get().strip(), self.provider_var.get().strip())
+            return
+        if mtime == self._cfg_mtime:
+            return
+        self._cfg_mtime = mtime
+        model, provider = read_config_defaults()
+        cur_model = self.model_var.get().strip()
+        cur_provider = self.provider_var.get().strip()
+        last_model, last_provider = self._last_auto
+        updated = []
+        if model and (not cur_model or cur_model == last_model):
+            self.model_var.set(model)
+            updated.append(f"model={model}")
+        if provider and (not cur_provider or cur_provider == last_provider):
+            self.provider_var.set(provider)
+            updated.append(f"provider={provider}")
+        self._last_auto = (self.model_var.get().strip(), self.provider_var.get().strip())
+        self._update_info_labels()
+        if updated:
+            self._log(f"检测到配置变化，已自动刷新: {', '.join(updated)}")
+        else:
+            self._log("检测到配置变化，但模型/供应商已被手动修改，未自动覆盖")
+
+    def _build_ui(self):
+        pad = {"padx": 14, "pady": 7}
+
+        header = ttk.Frame(self.root)
+        header.pack(fill="x", padx=14, pady=(14, 4))
+        ttk.Label(header, text="Codex 模型同步器", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="把旧对话的模型同步到当前配置，跟随 cc-switch 任意切换模型",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
+        frm_cfg = ttk.LabelFrame(self.root, text="目标配置（跟随 ~/.codex/config.toml）")
         frm_cfg.pack(fill="x", **pad)
         frm_cfg.columnconfigure(1, weight=1)
 
-        ttk.Label(frm_cfg, text="模型:").grid(row=0, column=0, sticky="w", padx=(10, 4), pady=(8, 2))
-        ttk.Entry(frm_cfg, textvariable=self.model_var, width=44).grid(
-            row=0, column=1, sticky="ew", padx=4, pady=(8, 2)
+        ttk.Label(frm_cfg, text="模型").grid(row=0, column=0, sticky="e", padx=(10, 8), pady=(10, 4))
+        ttk.Entry(frm_cfg, textvariable=self.model_var, width=40).grid(
+            row=0, column=1, sticky="ew", padx=4, pady=(10, 4)
         )
-        ttk.Label(frm_cfg, text="供应商:").grid(row=1, column=0, sticky="w", padx=(10, 4), pady=2)
-        ttk.Entry(frm_cfg, textvariable=self.provider_var, width=44).grid(
-            row=1, column=1, sticky="ew", padx=4, pady=2
+        ttk.Label(frm_cfg, text="供应商").grid(row=1, column=0, sticky="e", padx=(10, 8), pady=4)
+        ttk.Entry(frm_cfg, textvariable=self.provider_var, width=40).grid(
+            row=1, column=1, sticky="ew", padx=4, pady=4
         )
-        self.btn_read = ttk.Button(frm_cfg, text="重新读取配置", command=self._read_config)
-        self.btn_read.grid(row=0, column=2, rowspan=2, padx=10, pady=4, sticky="ns")
+        self.btn_read = ttk.Button(frm_cfg, text="重新读取", command=self._read_config, width=10)
+        self.btn_read.grid(row=0, column=2, rowspan=2, padx=(12, 10), pady=6, sticky="ns")
 
-        self.lbl_info = ttk.Label(frm_cfg, foreground="#555555", wraplength=760)
-        self.lbl_info.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 8))
+        ttk.Label(
+            frm_cfg,
+            text="配置变化时自动刷新（每 2 秒检测），手动修改不会被覆盖",
+            style="Hint.TLabel",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 4))
+
+        self.lbl_info = ttk.Label(frm_cfg, foreground="#555555", wraplength=800)
+        self.lbl_info.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 8))
 
         frm_opts = ttk.LabelFrame(self.root, text="选项")
         frm_opts.pack(fill="x", **pad)
@@ -619,54 +689,57 @@ class CodexModelSyncApp:
             frm_opts,
             text="同时同步会话 jsonl 的 model_provider 标签",
             variable=self.jsonl_var,
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(8, 3))
         ttk.Checkbutton(
             frm_opts,
             text="跳过 Codex 进程检查（仅在确认无其他会话占用时勾选）",
             variable=self.skip_var,
-        ).grid(row=1, column=0, sticky="w", padx=10, pady=2)
+        ).grid(row=1, column=0, sticky="w", padx=12, pady=3)
         if TRAY_AVAILABLE:
             ttk.Checkbutton(
                 frm_opts,
                 text="关闭/最小化时最小化到系统托盘（后台运行）",
                 variable=self.tray_var,
-            ).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 6))
+            ).grid(row=2, column=0, sticky="w", padx=12, pady=(3, 8))
 
         frm_auto = ttk.LabelFrame(self.root, text="自动同步")
         frm_auto.pack(fill="x", **pad)
         self.btn_monitor = ttk.Button(frm_auto, text="开始监控", command=self._toggle_monitor, width=12)
-        self.btn_monitor.pack(side="left", padx=10, pady=6)
+        self.btn_monitor.pack(side="left", padx=12, pady=8)
         ttk.Checkbutton(
             frm_auto,
             text="开机自启（启动后进入监控模式）",
             variable=self.autostart_var,
             command=self._set_autostart,
-        ).pack(side="left", padx=16, pady=6)
+        ).pack(side="left", padx=16, pady=8)
         self.lbl_monitor = ttk.Label(frm_auto, foreground="#555555")
-        self.lbl_monitor.pack(side="left", padx=10, pady=6)
+        self.lbl_monitor.pack(side="left", padx=10, pady=8)
 
         frm_actions = ttk.Frame(self.root)
         frm_actions.pack(fill="x", **pad)
-        self.btn_preview = ttk.Button(frm_actions, text="预览修改（只读）", command=self._do_preview, width=18)
-        self.btn_preview.pack(side="left", padx=(0, 8))
-        self.btn_sync = ttk.Button(frm_actions, text="执行同步", command=self._do_sync, width=18)
-        self.btn_sync.pack(side="left", padx=8)
-        self.btn_backup = ttk.Button(
-            frm_actions, text="打开备份目录", command=self._open_backup, width=18, state="disabled"
+        self.btn_preview = ttk.Button(frm_actions, text="预览修改", command=self._do_preview, width=16)
+        self.btn_preview.pack(side="left", padx=(0, 8), pady=2)
+        self.btn_sync = ttk.Button(
+            frm_actions, text="执行同步", command=self._do_sync, width=16, style="Primary.TButton"
         )
-        self.btn_backup.pack(side="left", padx=8)
+        self.btn_sync.pack(side="left", padx=8, pady=2)
+        self.btn_backup = ttk.Button(
+            frm_actions, text="打开备份目录", command=self._open_backup, width=16, state="disabled"
+        )
+        self.btn_backup.pack(side="left", padx=8, pady=2)
 
         self.txt_log = st.ScrolledText(
-            self.root, height=14, state="disabled", font=("Consolas", 10),
+            self.root, height=13, state="disabled", font=("Consolas", 9),
             wrap="word",
+            relief="solid", borderwidth=1,
         )
-        self.txt_log.pack(fill="both", expand=True, padx=10, pady=(0, 6))
-        self.txt_log.tag_configure("err", foreground="#c0392b")
-        self.txt_log.tag_configure("ok", foreground="#27ae60")
-        self.txt_log.tag_configure("warn", foreground="#b9770e")
+        self.txt_log.pack(fill="both", expand=True, padx=14, pady=(2, 6))
+        self.txt_log.tag_configure("err", foreground="#b3261e")
+        self.txt_log.tag_configure("ok", foreground="#1e7a3c")
+        self.txt_log.tag_configure("warn", foreground="#9a6700")
 
-        self.lbl_status = ttk.Label(self.root, anchor="w")
-        self.lbl_status.pack(fill="x", padx=10, pady=(0, 6))
+        self.lbl_status = ttk.Label(self.root, anchor="w", padding=(2, 2))
+        self.lbl_status.pack(fill="x", padx=14, pady=(0, 8))
 
     # ---------- 配置读取 ----------
     def _read_config(self):
@@ -675,6 +748,8 @@ class CodexModelSyncApp:
             self.model_var.set(model)
         if provider:
             self.provider_var.set(provider)
+        self._last_auto = (self.model_var.get().strip(), self.provider_var.get().strip())
+        self._cfg_mtime = self._get_config_mtime()
         self._update_info_labels()
 
     def _update_info_labels(self):
